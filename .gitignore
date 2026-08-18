@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated pipeline artifacts
+data/social/normalized/*.jsonl
+data/social/raw/
+data/evidence/
+data/clusters/
+data/signals/
+data/events/
+data/daily/
+data/timeline/
+data/knowledge/
+data/research/
+
+logs/
+obsidian/
+reports/
+Briefings/
+dashboard/
+
+# Local config / secrets
+data/project.yaml
+data/.scrapecreators_key
+data/scrapecreators-reddit.json
+.config/
+*.env
+*.key

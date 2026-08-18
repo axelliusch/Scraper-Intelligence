@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Precinct Planning Feed</title>
+  <link href="https://example.test/atom"/>
+  <updated>2026-08-15T00:00:00Z</updated>
+  <entry>
+    <title>Planning panel schedules hearings</title>
+    <link href="https://example.test/planning/hearings-aug"/>
+    <id>urn:example:planning:478</id>
+    <updated>2026-08-15T02:10:00Z</updated>
+    <author>
+      <name>Planning Panel</name>
+      <email>panel@example.test</email>
+    </author>
+    <content type="html">&lt;p&gt;Hearings for four development applications are scheduled.&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>Waterfront precinct design review</title>
+    <link href="https://example.test/planning/design-review"/>
+    <link rel="enclosure" href="https://example.test/media/design.pdf" type="application/pdf"/>
+    <id>urn:example:planning:479</id>
+    <updated>2026-08-14T18:40:00+11:00</updated>
+    <summary>Design review moved to September.</summary>
+  </entry>
+</feed>

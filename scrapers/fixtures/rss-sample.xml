@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Example Property News</title>
+    <link>https://example.test/news</link>
+    <description>Test RSS 2.0 feed used by the offline rss-collector mock.</description>
+    <item>
+      <title>Inner-west apartment approvals rise</title>
+      <link>https://example.test/news/inner-west-approvals</link>
+      <guid isPermaLink="false">example-news-4412</guid>
+      <pubDate>Mon, 15 Aug 2026 09:30:00 GMT</pubDate>
+      <author>planning@example.test (Jane Planner)</author>
+      <description><![CDATA[<p>Approvals rose <b>12%</b> quarter-on-quarter.</p>]]></description>
+      <content:encoded><![CDATA[<p>Approvals rose <b>12%</b> quarter-on-quarter.</p><p>Driven by the inner-west corridor.</p>]]></content:encoded>
+      <enclosure url="https://example.test/media/chart.png" type="image/png" length="2048"/>
+    </item>
+    <item>
+      <title>Developer consolidates Camperdown site</title>
+      <link>https://example.test/news/camperdown-site</link>
+      <guid isPermaLink="false">example-news-4413</guid>
+      <pubDate>2026-08-14</pubDate>
+      <dc:creator>Market Desk</dc:creator>
+      <description>Camperdown consolidation confirmed in the planning portal filing.</description>
+    </item>
+    <item>
+      <title>Rent growth cools in July</title>
+      <link>https://example.test/news/rent-growth-july</link>
+      <pubDate>Wed, 13 Aug 2026 02:00:00 +1000</pubDate>
+      <description>Rent growth slowed to 0.3% month-on-month across the precinct.</description>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.2",
+  "query": "acme corp funding news",
+  "generated_at": "2026-08-14T10:24:00Z",
+  "window_days": 30,
+  "source_status": {
+    "instagram": {"state": "ok", "items_returned": 1},
+    "x": {"state": "ok", "items_returned": 2},
+    "youtube": {"state": "no-results"}
+  },
+  "freshness_verdicts": [],
+  "clusters": [
+    {"title": "Acme funding rumors", "summary": "sum", "sources": ["x"], "engagement_total": 332}
+  ],
+  "results": [
+    {
+      "candidate_id": "ig_post_98765",
+      "title": "Acme unveils new reactor floor",
+      "source": "instagram",
+      "url": "https://instagram.com/p/ig_post_98765",
+      "published_at": "2026-08-10T08:00:00Z",
+      "summary": "Reactor floor walkthrough at Acme HQ.",
+      "engagement": {"like_count": 214},
+      "relevance_score": 0.9,
+      "cluster": 0
+    },
+    {
+      "candidate_id": "1910444012345678",
+      "title": "X post on Acme funding",
+      "source": "x",
+      "url": "https://x.com/i/status/1910444012345678",
+      "published_at": "2026-08-09T12:30:00Z",
+      "summary": "Breaking: Acme closes Series B.",
+      "engagement": {"likes": 312, "retweet_count": 20},
+      "relevance_score": 0.95,
+      "cluster": 0
+    },
+    {
+      "candidate_id": "482993XjQ",
+      "title": "Acme funding comment thread",
+      "source": "x",
+      "url": "https://x.com/i/status/482993XjQ",
+      "published_at": "2026-08-09T14:05:00Z",
+      "summary": "Analyst thread on Acme Series B details.",
+      "engagement": {"likes": 90, "replies": 12},
+      "relevance_score": 0.7,
+      "cluster": 0
+    }
+  ]
+}

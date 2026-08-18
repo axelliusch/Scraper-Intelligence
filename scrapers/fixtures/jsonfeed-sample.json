@@ -1,0 +1,27 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "Sydney Development Monitor",
+  "home_page_url": "https://example.test/",
+  "feed_url": "https://example.test/feed.json",
+  "items": [
+    {
+      "id": "sf-9001",
+      "url": "https://example.test/d/9001",
+      "title": "North Sydney tower gets its DA green light",
+      "content_text": "The 40-storey tower received approval with conditions.",
+      "date_published": "2026-08-15T05:30:00Z",
+      "authors": [{"name": "Development Monitor"}],
+      "attachments": [
+        {"url": "https://example.test/media/tower.jpg", "mime_type": "image/jpeg", "title": "Tower render"}
+      ]
+    },
+    {
+      "id": "sf-9002",
+      "url": "https://example.test/d/9002",
+      "title": "Metro line opens this weekend",
+      "content_html": "<p>Passenger services begin <b>Sunday</b>.</p>",
+      "date_published": "2026-08-14T22:00:00+10:00",
+      "authors": [{"name": "Development Monitor"}]
+    }
+  ]
+}
