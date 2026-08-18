@@ -63,6 +63,32 @@ def _get_wsl_firefox_profiles_dir() -> Optional[Path]:
     return None
 
 
+def _get_msix_firefox_profiles_dir() -> Optional[Path]:
+    """Find the Microsoft Store (MSIX) Firefox profiles directory on Windows.
+
+    Store-packaged Firefox keeps its profile under a per-user package sandbox
+    instead of the classic %APPDATA%\\Mozilla\\Firefox, e.g.::
+
+        %LOCALAPPDATA%\\Packages\\Mozilla.Firefox_<hash>\\
+            LocalCache\\Roaming\\Mozilla\\Firefox
+
+    Returns the first such directory that actually exists, or None.
+    """
+    packages = Path.home() / "AppData" / "Local" / "Packages"
+    if not packages.is_dir():
+        return None
+    try:
+        for pkg in sorted(packages.iterdir()):
+            if not pkg.name.startswith("Mozilla.Firefox"):
+                continue
+            candidate = pkg / "LocalCache" / "Roaming" / "Mozilla" / "Firefox"
+            if candidate.is_dir():
+                return candidate
+    except OSError:
+        pass
+    return None
+
+
 def _get_firefox_profiles_dir() -> Optional[Path]:
     """Return the Firefox profiles directory for the current platform, or None."""
     system = platform.system()
@@ -80,9 +106,13 @@ def _get_firefox_profiles_dir() -> Optional[Path]:
         else:
             path = Path.home() / ".config" / "mozilla" / "firefox"
     else:
-        # Windows: %APPDATA%\Mozilla\Firefox — best-effort
-        appdata = Path.home() / "AppData" / "Roaming" / "Mozilla" / "Firefox"
-        path = appdata
+        # Windows: classic %APPDATA%\Mozilla\Firefox first, then the
+        # Microsoft Store (MSIX) build's sandboxed profile location.
+        path = Path.home() / "AppData" / "Roaming" / "Mozilla" / "Firefox"
+        if not path.is_dir():
+            msix = _get_msix_firefox_profiles_dir()
+            if msix is not None:
+                path = msix
     return path if path.is_dir() else None
 
 

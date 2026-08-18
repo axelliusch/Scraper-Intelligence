@@ -8,14 +8,18 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from platforms import (
+    AUTH_FAILED,
     AVAILABLE,
+    ERROR,
+    MISSING_CREDENTIALS,
     NOT_CONFIGURED,
     NOT_INSTALLED,
-    MISSING_CREDENTIALS,
     NO_RESULTS,
     PARTIAL,
     PLATFORM_SPECS,
+    RATE_LIMITED,
     STATUSES,
+    UNREACHABLE,
     classify_observed,
     spec_for,
 )
@@ -37,6 +41,7 @@ class CoverageRow:
     records: int = 0  # normalized records collected for this platform
     evidence: int = 0  # analysis-layer evidence items from those records
     note: str = ""
+    error: str = ""  # human-readable failure detail from the engine (stderr)
 
 
 @dataclass
@@ -105,6 +110,7 @@ def build_coverage_report(
     entity: str,
     *,
     engine_status: Mapping[str, str] | None = None,
+    engine_errors: Mapping[str, str] | None = None,
     window_days: int | None = None,
     normalized_dir: str | Path | None = None,
     env: Mapping[str, str] | None = None,
@@ -113,10 +119,13 @@ def build_coverage_report(
 
     engine_status maps engine source names -> observed outcome states (the
     adapter's ``last_source_status``). Platforms the run did not observe fall
-    back to static classification from the local environment.
+    back to static classification from the local environment. engine_errors
+    maps engine source names -> failure detail strings (the adapter's
+    ``last_source_errors``), attached as the per-row error text.
     """
     normalized_dir = Path(normalized_dir) if normalized_dir else Path("data") / "social" / "normalized"
     engine_status = dict(engine_status or {})
+    engine_errors = dict(engine_errors or {})
 
     # Map observed statuses by schema platform, keeping the first state seen.
     observed_by_platform: dict[str, str] = {}
@@ -144,16 +153,19 @@ def build_coverage_report(
                 note = "credential required"
             elif status == PARTIAL and not spec.env:
                 note = "best-effort (anonymous caps)"
+        engine_source = engine_by_platform.get(spec.key)
+        error = (engine_errors.get(engine_source) if engine_source else "") or ""
         rows.append(
             CoverageRow(
                 platform=spec.key,
                 name=spec.name,
                 status=status,
-                engine_source=engine_by_platform.get(spec.key),
+                engine_source=engine_source,
                 engine_state=state,
                 records=records,
                 evidence=evidence,
                 note=note,
+                error=error,
             )
         )
 
@@ -166,6 +178,30 @@ def build_coverage_report(
     )
 
 
+#: Plain-language reason per coverage status, used when the engine itself did
+#: not provide a richer failure detail.
+_STATUS_EXPLANATIONS: dict[str, str] = {
+    AVAILABLE: "ready and searched",
+    PARTIAL: "returned fewer results than expected",
+    MISSING_CREDENTIALS: "no API key configured for this platform",
+    NOT_INSTALLED: "required tool is not installed",
+    NOT_CONFIGURED: "no route or credential is configured for this platform",
+    AUTH_FAILED: "authentication rejected (invalid or expired credential)",
+    RATE_LIMITED: "provider rate limit reached",
+    UNREACHABLE: "provider unreachable (network or outage)",
+    ERROR: "failed during collection",
+    NO_RESULTS: "searched, but no matching content was found",
+}
+
+
+def _row_explanation(row: CoverageRow) -> str:
+    """Human-readable 'why' for one coverage row (status + engine detail)."""
+    error = (row.error or "").strip()
+    if error:
+        return error
+    return _STATUS_EXPLANATIONS.get(row.status, f"status {row.status}")
+
+
 def coverage_to_markdown(report: CoverageReport) -> str:
     """Render a coverage report as a markdown table."""
     lines = [
@@ -174,14 +210,13 @@ def coverage_to_markdown(report: CoverageReport) -> str:
         f"- Generated: {report.generated_at}",
         f"- Observation window: {report.window_days or 'n/a'} days",
         "",
-        "| Platform | Status | Records | Evidence | Engine source | Note |",
-        "|---|---|---:|---:|---|---|",
+        "| Platform | Status | Records | Evidence | Why |",
+        "|---|---|---:|---:|---|",
     ]
     for row in report.rows:
-        source = row.engine_source or ""
         lines.append(
             f"| {row.name} (`{row.platform}`) | {row.status} | "
-            f"{row.records} | {row.evidence} | {source} | {row.note} |"
+            f"{row.records} | {row.evidence} | {_row_explanation(row)} |"
         )
     summary = report.summary()
     lines += [

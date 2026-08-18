@@ -691,6 +691,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tiktok-hashtags", help="Comma-separated TikTok hashtags without # (e.g., tella,screenrecording)")
     parser.add_argument("--tiktok-creators", help="Comma-separated TikTok creator handles (e.g., TellaHQ,taborplace)")
     parser.add_argument("--ig-creators", help="Comma-separated Instagram creator handles (e.g., tella.tv,laborstories)")
+    parser.add_argument("--linkedin-companies", help="Comma-separated LinkedIn company-page URLs (e.g., https://www.linkedin.com/company/oliver-hume)")
     parser.add_argument(
         "--days",
         "--lookback-days",
@@ -1407,6 +1408,10 @@ def _run_drill(
             ig_creators=(
                 [value.strip().lstrip("@") for value in args.ig_creators.split(",") if value.strip()]
                 if args.ig_creators else None
+            ),
+            linkedin_companies=(
+                [value.strip().rstrip("/") for value in args.linkedin_companies.split(",") if value.strip()]
+                if args.linkedin_companies else None
             ),
             lookback_days=lookback_days,
             as_of_date=as_of_date,
@@ -3204,6 +3209,7 @@ def _main(
         tiktok_hashtags = [h.strip().lstrip("#") for h in args.tiktok_hashtags.split(",") if h.strip()] if args.tiktok_hashtags else None
         tiktok_creators = [c.strip().lstrip("@") for c in args.tiktok_creators.split(",") if c.strip()] if args.tiktok_creators else None
         ig_creators = [c.strip().lstrip("@") for c in args.ig_creators.split(",") if c.strip()] if args.ig_creators else None
+        linkedin_companies = [c.strip().rstrip("/") for c in args.linkedin_companies.split(",") if c.strip()] if args.linkedin_companies else None
         # Parse external plan if provided via --plan flag
         external_plan = None
         if args.plan:
@@ -3389,6 +3395,7 @@ def _main(
                 tiktok_hashtags=tiktok_hashtags,
                 tiktok_creators=tiktok_creators,
                 ig_creators=ig_creators,
+                linkedin_companies=linkedin_companies,
                 lookback_days=args.lookback_days,
                 as_of_date=args.as_of_date,
                 github_user=github_user,

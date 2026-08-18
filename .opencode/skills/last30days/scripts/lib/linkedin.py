@@ -278,6 +278,77 @@ def _best_author_match(items: List[Dict[str, Any]], topic: str) -> str:
     return ""
 
 
+def search_company_posts(
+    company_urls: List[str],
+    token: str,
+    max_pages: int = 1,
+) -> Dict[str, Any]:
+    """Fetch recent posts from LinkedIn company pages via ScrapeCreators.
+
+    Calls /v1/linkedin/company/posts once per company (page 1 = latest posts),
+    which stays cheap for a per-account briefing lane. Uses the same post
+    extraction + parsing path as keyword search, so results normalize as
+    ordinary LinkedIn posts.
+
+    Args:
+        company_urls: Full LinkedIn company-page URLs (e.g.
+            "https://www.linkedin.com/company/oliver-hume").
+        token: ScrapeCreators API key.
+        max_pages: Company-post pages to fetch per company (default 1 = latest).
+
+    Returns:
+        Dict with a 'posts' list of raw post dicts.
+    """
+    if not token or not company_urls:
+        return {"posts": []}
+
+    seen: set[str] = set()
+    posts: List[Dict[str, Any]] = []
+    last_error = None
+
+    for company_url in company_urls:
+        url = str(company_url or "").strip()
+        if not url:
+            continue
+        if not url.startswith("http"):
+            url = f"https://www.linkedin.com/company/{url}"
+        _log(f"Company posts: {url} (page 1)")
+        try:
+            response = http.get(
+                f"{SC_BASE}/company/posts",
+                params={"url": url, "page": 1},
+                headers=http.scrapecreators_headers(token),
+                timeout=30,
+                retries=2,
+            )
+        except http.HTTPError as exc:
+            _log(f"Company posts failed (HTTP {exc.status_code}): {exc}")
+            last_error = str(exc)
+            continue
+        except Exception as exc:
+            _log(f"Company posts failed: {type(exc).__name__}: {exc}")
+            last_error = str(exc)
+            continue
+
+        for post in _extract_posts(response):
+            if not isinstance(post, dict):
+                continue
+            pid = str(
+                post.get("postId") or post.get("id") or post.get("urn") or ""
+            )
+            if pid and pid in seen:
+                continue
+            if pid:
+                seen.add(pid)
+            if post.get("text") or post.get("description"):
+                posts.append(post)
+
+        if last_error is None:
+            _log(f"  -> {len(_extract_posts(response))} posts from company page")
+
+    return {"posts": posts, "error": last_error}
+
+
 def search_profile(profile_url: str, token: str) -> Dict[str, Any]:
     """Fetch a LinkedIn profile (incl. `articles[]`) via ScrapeCreators."""
     if not token or not profile_url:

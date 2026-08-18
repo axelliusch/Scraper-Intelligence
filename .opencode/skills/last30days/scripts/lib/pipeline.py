@@ -1924,6 +1924,7 @@ def run(
     tiktok_hashtags: list[str] | None = None,
     tiktok_creators: list[str] | None = None,
     ig_creators: list[str] | None = None,
+    linkedin_companies: list[str] | None = None,
     lookback_days: int = 30,
     as_of_date: str | None = None,
     github_user: str | None = None,
@@ -2287,6 +2288,7 @@ def run(
                         tiktok_hashtags=tiktok_hashtags,
                         tiktok_creators=tiktok_creators,
                         ig_creators=ig_creators,
+                        linkedin_companies=linkedin_companies,
                         trustpilot_domain=trustpilot_domain,
                         trustpilot_domain_is_hint=trustpilot_domain_is_hint,
                     )
@@ -2321,6 +2323,7 @@ def run(
                             tiktok_hashtags=tiktok_hashtags,
                             tiktok_creators=tiktok_creators,
                             ig_creators=ig_creators,
+                            linkedin_companies=linkedin_companies,
                             trustpilot_domain=trustpilot_domain,
                             trustpilot_domain_is_hint=trustpilot_domain_is_hint,
                         )
@@ -2399,6 +2402,7 @@ def run(
         tiktok_hashtags=tiktok_hashtags,
         tiktok_creators=tiktok_creators,
         ig_creators=ig_creators,
+        linkedin_companies=linkedin_companies,
     )
 
     # Reclassify partial failures as DEGRADED instead of silently dropping them.
@@ -3389,6 +3393,7 @@ def _retry_thin_sources(
     tiktok_hashtags: list[str] | None = None,
     tiktok_creators: list[str] | None = None,
     ig_creators: list[str] | None = None,
+    linkedin_companies: list[str] | None = None,
 ) -> None:
     """Retry sources with thin results using simplified core subject query."""
     if depth == "quick":
@@ -3455,6 +3460,7 @@ def _retry_thin_sources(
             tiktok_hashtags=tiktok_hashtags,
             tiktok_creators=tiktok_creators,
             ig_creators=ig_creators,
+            linkedin_companies=linkedin_companies,
         )
         outcome_note = artifact.get("_source_outcome") if isinstance(artifact, dict) else None
         normalized = _normalize_score_dedupe(
@@ -3622,6 +3628,7 @@ def _retrieve_stream_impl(
     tiktok_hashtags: list[str] | None = None,
     tiktok_creators: list[str] | None = None,
     ig_creators: list[str] | None = None,
+    linkedin_companies: list[str] | None = None,
     trustpilot_domain: str | None = None,
     trustpilot_domain_is_hint: bool = False,
 ) -> tuple[list[dict], dict]:
@@ -3896,6 +3903,17 @@ def _retrieve_stream_impl(
         return items, _result_outcome_artifact(source, result)
     if source == "linkedin":
         token = config.get("SCRAPECREATORS_API_KEY", "")
+        merged_result: Dict[str, Any] = {"posts": []}
+        errors: list[str] = []
+        # Targeted company pages first (per-account lane, page 1 = latest).
+        if linkedin_companies:
+            company_result = linkedin.search_company_posts(
+                linkedin_companies, token, max_pages=1
+            )
+            merged_result["posts"].extend(company_result.get("posts") or [])
+            if company_result.get("error"):
+                errors.append(str(company_result["error"]))
+        # Keyword search on top.
         result = linkedin.search_linkedin(
             subquery.search_query,
             from_date,
@@ -3903,15 +3921,20 @@ def _retrieve_stream_impl(
             depth=depth,
             token=token,
         )
+        merged_result["posts"].extend(result.get("posts") or [])
+        if result.get("error"):
+            errors.append(str(result["error"]))
         items = linkedin.parse_linkedin_response(
-            result, from_date=from_date, to_date=to_date
+            merged_result, from_date=from_date, to_date=to_date
         )
         # Articles never appear in post search — surface them (high signal)
         # via a bounded profile-enrichment lane on person topics.
         items += linkedin.enrich_articles(
             items, raw_topic or topic, token, from_date=from_date, to_date=to_date
         )
-        return items, _result_outcome_artifact(source, result)
+        if errors:
+            merged_result["error"] = " | ".join(errors)
+        return items, _result_outcome_artifact(source, merged_result)
     if source == "hackernews":
         result = hackernews.search_hackernews(subquery.search_query, from_date, to_date, depth=depth)
         return (

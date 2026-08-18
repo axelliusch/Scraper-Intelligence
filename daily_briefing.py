@@ -30,6 +30,7 @@ PIPELINE = ROOT / "run_pipeline.py"
 NORMALIZED_DIR = ROOT / "data" / "social" / "normalized"
 DAILY_DIR = ROOT / "data" / "daily"
 REPORTS_DIR = ROOT / "Briefings"
+COVERAGE_LOG = ROOT / "logs" / "coverage.jsonl"
 
 TOPICS: list[dict] = [
     {
@@ -248,6 +249,153 @@ def _coverage_section(records: list[dict[str, Any]], digest: dict[str, Any] | No
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Collection health: why each platform produced what it did (or nothing).
+# ---------------------------------------------------------------------------
+
+#: Plain-language reason per coverage status shown in the briefing. The engine
+#: error detail (if captured) takes precedence over these static explanations.
+_STATUS_WHY: dict[str, str] = {
+    "AVAILABLE": "ready and searched",
+    "PARTIAL": "returned fewer results than expected",
+    "MISSING_CREDENTIALS": "no API key configured for this platform",
+    "NOT_INSTALLED": "required tool is not installed",
+    "NOT_CONFIGURED": "no route or credential is configured for this platform",
+    "AUTH_FAILED": "authentication was rejected",
+    "RATE_LIMITED": "the provider rate limit was reached",
+    "UNREACHABLE": "the provider was unreachable",
+    "ERROR": "failed during collection",
+    "NO_RESULTS": "searched, but found no matching content in the window",
+}
+
+#: Actionable fix per coverage status, for the person reading the briefing.
+_STATUS_FIX: dict[str, str] = {
+    "AVAILABLE": "",
+    "PARTIAL": "",
+    "NO_RESULTS": "",
+    "MISSING_CREDENTIALS": "Add the API key to .config/last30days/.env (or set SCRAPECREATORS_API_KEY).",
+    "NOT_INSTALLED": "Run setup.bat to install the required tool.",
+    "NOT_CONFIGURED": "Configure a credential or login route for this platform.",
+    "AUTH_FAILED": "Check the API key or log in again (see the daily run log for details).",
+    "RATE_LIMITED": "Wait a while and run collect_today.py again.",
+    "UNREACHABLE": "Check your internet connection and retry.",
+    "ERROR": "Check the daily run log for the full error.",
+}
+
+#: Fix overrides for specific known causes found in the error detail text.
+_CAUSE_FIX_RULES: list[tuple[str, str]] = [
+    ("402", "The ScrapeCreators API has 0 credits left — top up at app.scrapecreators.com."),
+    ("payment required", "The ScrapeCreators API has 0 credits left — top up at app.scrapecreators.com."),
+    ("out of credits", "The ScrapeCreators API has 0 credits left — top up at app.scrapecreators.com."),
+    ("401", "The API key is invalid or expired — check .config/last30days/.env."),
+    ("no cookies", "Log into this platform once in the browser the engine reads (see .config/last30days/.env FROM_BROWSER)."),
+    ("no browser", "Log into this platform once in the browser the engine reads (see .config/last30days/.env FROM_BROWSER)."),
+]
+
+_UNUSUAL_STATUSES = (
+    "ERROR",
+    "UNREACHABLE",
+    "AUTH_FAILED",
+    "RATE_LIMITED",
+    "MISSING_CREDENTIALS",
+    "NOT_INSTALLED",
+    "NOT_CONFIGURED",
+    "PARTIAL",
+    "NO_RESULTS",
+)
+
+
+def _load_coverage(entity: str) -> dict[str, Any] | None:
+    """Return the most recent coverage report for an entity (or None)."""
+    if not COVERAGE_LOG.exists():
+        return None
+    latest: dict[str, Any] | None = None
+    try:
+        for line in COVERAGE_LOG.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                blob = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if blob.get("entity") == entity:
+                latest = blob
+    except OSError:
+        return None
+    return latest
+
+
+#: Fallback explanations for the ERROR status when the engine gave no detail.
+#: X's only route in this project is the browser-cookie path, so a bare
+#: "error" for x almost always means the cookies are missing or expired.
+_ERROR_FALLBACK_WHY: dict[str, str] = {
+    "x": "X failed during collection — the browser cookies it reads are missing or expired",
+}
+_ERROR_FALLBACK_FIX: dict[str, str] = {
+    "x": "Install Firefox, log into x.com once with 'remember me', then close it (the engine reads the cookies from disk).",
+}
+
+
+def _health_why(status: str, error: str) -> str:
+    error = (error or "").strip()
+    if error:
+        return error
+    return _STATUS_WHY.get(status, f"status {status}")
+
+
+def _health_fix(status: str, error: str, platform: str) -> str:
+    error = (error or "").strip()
+    lowered = error.lower()
+    for cause, fix in _CAUSE_FIX_RULES:
+        if cause in lowered:
+            return fix
+    if status == "ERROR" and not error:
+        fallback = _ERROR_FALLBACK_FIX.get(platform)
+        if fallback:
+            return fallback
+    return _STATUS_FIX.get(status, "")
+
+
+def _health_section(entity: str) -> str:
+    """Render the body of the 'Collection health' section (heading excluded)."""
+    coverage = _load_coverage(entity)
+    lines: list[str] = []
+    if not coverage:
+        lines.append("_No collection coverage was recorded for this topic._")
+        lines.append("")
+        return "\n".join(lines)
+
+    rows = [r for r in (coverage.get("rows") or []) if isinstance(r, dict)]
+    if not rows:
+        lines.append("_No platform coverage rows were recorded for this topic._")
+        lines.append("")
+        return "\n".join(lines)
+
+    unusual = [r for r in rows if r.get("status") in _UNUSUAL_STATUSES]
+    if not unusual:
+        lines.append("All configured platforms collected normally this run.")
+        lines.append("")
+        return "\n".join(lines)
+
+    lines.append("Platforms that did not collect normally this run:")
+    lines.append("")
+    lines.append("| Platform | Status | Why | What to do |")
+    lines.append("|---|---|---|---|")
+    for row in unusual:
+        name = PLATFORM_LABELS.get(row.get("platform"), row.get("name") or row.get("platform"))
+        platform = str(row.get("platform") or "")
+        status = str(row.get("status") or "?")
+        error = str(row.get("error") or "")
+        why = _health_why(status, error)
+        if status == "ERROR" and not error:
+            why = _ERROR_FALLBACK_WHY.get(platform, why)
+        fix = _health_fix(status, error, platform) or "—"
+        lines.append(f"| {name} | {status} | {why} | {fix} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _render(topic: dict[str, Any], as_of: str, *, dry_run: bool) -> dict[str, Any]:
     entity = topic["entity"]
     display = topic["display"]
@@ -312,6 +460,7 @@ def _render(topic: dict[str, Any], as_of: str, *, dry_run: bool) -> dict[str, An
     lines += ["## Important events", "", _events_section(digest)]
     lines += ["## Signals", "", _signals_section(digest)]
     lines += ["## Source coverage", "", _coverage_section(records, digest), ""]
+    lines += ["## Collection health", "", _health_section(entity)]
 
     body = "\n".join(lines).rstrip() + "\n"
 

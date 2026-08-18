@@ -44,10 +44,10 @@ LAST30DAYS_ENGINE = ROOT / ".opencode" / "skills" / "last30days" / "scripts" / "
 CONFIG_DIR = ROOT / ".config" / "last30days"
 
 # Per BYOK (skill README "Bring Your Own Keys"): Reddit + HN + Polymarket are
-# free, YouTube uses yt-dlp, and TikTok/Instagram/LinkedIn/Threads/Pinterest
-# use the SCRAPECREATORS_API_KEY. X is excluded (needs XAI/XQUIK key or browser
-# login, which we don't have).
-LAST30DAYS_SOURCES = "reddit,hackernews,youtube,tiktok,instagram,linkedin,threads,pinterest,polymarket"
+# free, YouTube uses yt-dlp, TikTok/Instagram/LinkedIn/Threads/Pinterest use
+# the SCRAPECREATORS_API_KEY, and X uses the browser cookie (FROM_BROWSER in
+# the engine config; requires a Firefox profile logged into x.com).
+LAST30DAYS_SOURCES = "reddit,hackernews,youtube,tiktok,instagram,linkedin,threads,pinterest,polymarket,x"
 
 # Add or remove a topic here (one line per topic); the Briefings/<display>/
 # folder is created automatically by daily_briefing.py.
@@ -57,12 +57,29 @@ TOPICS: list[dict] = [
         "display": "Property",
         "entity_type": "topic",
         "query": "property market",
+        "linkedin_companies": [
+            "https://www.linkedin.com/company/oliver-hume",
+            "https://www.linkedin.com/company/colliers",
+            "https://www.linkedin.com/company/laverresidentialprojects",
+            "https://www.linkedin.com/company/mmj-real-estate",
+            "https://www.linkedin.com/company/slaite-project-marketing",
+            "https://www.linkedin.com/company/360-property-group",
+            "https://www.linkedin.com/company/1group-property-advisory",
+        ],
     },
     {
         "entity": "wedding",
         "display": "Wedding",
         "entity_type": "topic",
         "query": "wedding planning",
+        "linkedin_companies": [
+            "https://www.linkedin.com/company/jkandco",
+            "https://www.linkedin.com/company/a-lavish-affair",
+            "https://www.linkedin.com/company/bowcreative",
+            "https://www.linkedin.com/company/mills-franks",
+            "https://www.linkedin.com/company/lux-it",
+            "https://www.linkedin.com/company/mcmillanmgmt",
+        ],
     },
     {
         "entity": "finance",
@@ -134,6 +151,9 @@ def _collect_last30days(topic: dict, *, dry_run: bool) -> int:
         "--allow-all",
         "--search", LAST30DAYS_SOURCES,
     ]
+    linkedin_companies = topic.get("linkedin_companies") or []
+    if linkedin_companies:
+        cmd += ["--linkedin-companies", ",".join(linkedin_companies)]
     key = _load_api_key()
     env = {"SCRAPECREATORS_API_KEY": key, "LAST30DAYS_CONFIG_DIR": str(CONFIG_DIR)} if key else None
     return _run(cmd, dry_run=dry_run, env=env)

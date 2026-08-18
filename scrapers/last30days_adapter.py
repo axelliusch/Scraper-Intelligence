@@ -82,6 +82,9 @@ class Last30daysAdapter(SocialCollector):
         #: Last engine run's observed outcomes: source name -> state ("ok",
         #: "no-results", "partial", ...). None until a collect() completes.
         self.last_source_status: dict[str, str] | None = None
+        #: Last engine run's per-source error strings (source -> detail) pulled
+        #: from the engine's stderr so failures can be explained in briefings.
+        self.last_source_errors: dict[str, str] = {}
         #: Last engine run's observation window in days (None if unspecified).
         self.last_window_days: int | None = None
         #: Last engine run's generated_at timestamp.
@@ -114,11 +117,17 @@ class Last30daysAdapter(SocialCollector):
         query = str(target["query"])
         raw_path = self._raw_output_path(query)
         search = self._search_tokens(target)
+        linkedin_companies = [
+            str(url).strip()
+            for url in (target.get("linkedin_companies") or [])
+            if str(url).strip()
+        ] or None
         cmd = self._build_command(
             query,
             raw_path,
             mock=bool(target.get("mock", False)),
             search=search,
+            linkedin_companies=linkedin_companies,
         )
 
         # The rebuilt project has no vendored network engine. Mock mode is
@@ -156,6 +165,7 @@ class Last30daysAdapter(SocialCollector):
 
         profile = self._parse_json(raw_path, proc.stdout, query)
         self.last_source_status = self._observed_status(profile)
+        self.last_source_errors = self._extract_source_errors(proc.stderr or "")
         self.last_window_days = self._as_int(profile.get("window_days"))
         self.last_generated_at = str(profile.get("generated_at") or "")
         return self._to_records(profile, target, run_id, raw_path)
@@ -226,6 +236,89 @@ class Last30daysAdapter(SocialCollector):
         except (TypeError, ValueError):
             return None
 
+    # -- engine stderr -> per-source error detail --------------------------
+
+    #: Engine log-line prefix `[SourceName]` -> engine source token. Used to
+    #: attribute stderr failure lines to the source that owns them.
+    _SOURCE_LOGGER_TO_TOKEN: dict[str, str] = {
+        "linkedin": "linkedin",
+        "reddit": "reddit",
+        "x": "x",
+        "twitter": "x",
+        "youtube": "youtube",
+        "tiktok": "tiktok",
+        "instagram": "instagram",
+        "threads": "threads",
+        "pinterest": "pinterest",
+        "hackernews": "hackernews",
+        "hn": "hackernews",
+        "polymarket": "polymarket",
+        "github": "github",
+        "web": "grounding",
+        "grounding": "grounding",
+        "digg": "digg",
+        "arxiv": "arxiv",
+        "techmeme": "techmeme",
+    }
+
+    #: Substrings that mark a stderr line as a failure worth explaining.
+    _ERROR_HINTS = (
+        "failed",
+        "error",
+        "denied",
+        "rejected",
+        "rate limit",
+        "rate-limited",
+        "timed out",
+        "timeout",
+        "no sources",
+        "not found",
+        "unreachable",
+        "skipped",
+        "no credentials",
+        "credential",
+        "401",
+        "402",
+        "403",
+        "404",
+        "429",
+        "500",
+        "502",
+        "503",
+    )
+
+    @classmethod
+    def _extract_source_errors(cls, stderr: str) -> dict[str, str]:
+        """Map engine stderr failure lines to ``{source: detail}``.
+
+        The engine logs per-source activity as ``[SourceName] message`` lines on
+        stderr. Failure-sounding lines are kept so the briefing can explain why
+        a platform contributed nothing (credits exhausted, auth rejected,
+        no results, unreachable, ...). The most specific line per source wins.
+        """
+        errors: dict[str, str] = {}
+        for line in (stderr or "").splitlines():
+            text = line.strip()
+            if not text or not text.startswith("["):
+                continue
+            closing = text.find("]")
+            if closing <= 1:
+                continue
+            logger_name = text[1:closing].strip().lower()
+            source = cls._SOURCE_LOGGER_TO_TOKEN.get(logger_name)
+            if source is None:
+                continue
+            message = text[closing + 1 :].strip().strip(":")
+            if not message:
+                continue
+            lowered = message.lower()
+            if not any(hint in lowered for hint in cls._ERROR_HINTS):
+                continue
+            # Prefer the longest (most specific) detail for a given source.
+            if len(message) > len(errors.get(source, "")):
+                errors[source] = message
+        return errors
+
     # -- engine invocation helpers -----------------------------------------
 
     def _build_command(
@@ -236,6 +329,7 @@ class Last30daysAdapter(SocialCollector):
         mock: bool = False,
         quick: bool = False,
         search: str | None = None,
+        linkedin_companies: list[str] | None = None,
     ) -> list[str]:
         cmd: list[str] = [
             sys.executable,
@@ -245,7 +339,6 @@ class Last30daysAdapter(SocialCollector):
             "--json-profile=agent",
             "--output",
             str(raw_path),
-            "--no-browser-cookies",
         ]
         if mock:
             cmd.append("--mock")
@@ -254,6 +347,9 @@ class Last30daysAdapter(SocialCollector):
         if search:
             cmd.append("--search")
             cmd.append(search)
+        if linkedin_companies:
+            cmd.append("--linkedin-companies")
+            cmd.append(",".join(linkedin_companies))
         return cmd
 
     def _raw_output_path(self, query: str) -> Path:
@@ -537,6 +633,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Engine source filter: comma-separated engine source names",
     )
     parser.add_argument(
+        "--linkedin-companies",
+        default="",
+        help="Comma-separated LinkedIn company-page URLs to fetch latest posts from",
+    )
+    parser.add_argument(
         "--platforms",
         default="",
         help="Schema platform filter: comma-separated schema keys (e.g. reddit,x)",
@@ -592,6 +693,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.search:
         target["search"] = args.search
+    if args.linkedin_companies:
+        target["linkedin_companies"] = [
+            url.strip() for url in args.linkedin_companies.split(",") if url.strip()
+        ]
     if args.platform_list or args.platforms:
         platforms = [p.strip() for p in args.platforms.split(",") if p.strip()]
         platforms.extend(args.platform_list)
@@ -606,8 +711,10 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         raw_path = adapter._raw_output_path(args.query)
         search = adapter._search_tokens(target)
+        linkedin_companies = target.get("linkedin_companies") or None
         command = " ".join(map(str, adapter._build_command(
-            args.query, raw_path, mock=args.mock, quick=args.quick, search=search
+            args.query, raw_path, mock=args.mock, quick=args.quick, search=search,
+            linkedin_companies=linkedin_companies,
         )))
         print("DRY RUN OK")
         print(f"  entity      : {args.entity}")
@@ -615,6 +722,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  query       : {args.query}")
         if search:
             print(f"  search      : {search}")
+        if linkedin_companies:
+            print(f"  linkedin    : {len(linkedin_companies)} company page(s)")
         print(f"  raw output  : {raw_path}")
         print(f"  normalized  : {adapter.normalized_dir / (_slugify(args.entity) + '.jsonl')}")
         print(f"  command     : {command}")
@@ -641,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
         report = build_coverage_report(
             args.entity,
             engine_status=engine_status,
+            engine_errors=adapter.last_source_errors,
             window_days=adapter.last_window_days,
             normalized_dir=adapter.normalized_dir,
         )
