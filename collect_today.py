@@ -33,6 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ADAPTER = ROOT / "scrapers" / "last30days_adapter.py"
+RUN_COLLECTOR = ROOT / "scrapers" / "run_collector.py"
 NORMALIZED_DIR = ROOT / "data" / "social" / "normalized"
 KEY_FILE = ROOT / "data" / ".scrapecreators_key"
 
@@ -51,12 +52,19 @@ LAST30DAYS_SOURCES = "reddit,hackernews,youtube,tiktok,instagram,linkedin,thread
 
 # Add or remove a topic here (one line per topic); the Briefings/<display>/
 # folder is created automatically by daily_briefing.py.
+#
+# `location` is appended to the engine query so every platform in the run is
+# scoped to that country (the whole pipeline's geographic filter). Telegram has
+# no topic search; it collects from the public channel(s) listed under
+# `telegram_channels` (verified Australian channels only, t.me/s/<channel>).
 TOPICS: list[dict] = [
     {
         "entity": "property-market",
         "display": "Property",
         "entity_type": "topic",
         "query": "property market",
+        "location": "Australia",
+        "telegram_channels": ["AUProperty"],
         "linkedin_companies": [
             "https://www.linkedin.com/company/oliver-hume",
             "https://www.linkedin.com/company/colliers",
@@ -72,6 +80,7 @@ TOPICS: list[dict] = [
         "display": "Wedding",
         "entity_type": "topic",
         "query": "wedding planning",
+        "location": "World",
         "linkedin_companies": [
             "https://www.linkedin.com/company/jkandco",
             "https://www.linkedin.com/company/a-lavish-affair",
@@ -86,6 +95,8 @@ TOPICS: list[dict] = [
         "display": "Finance",
         "entity_type": "topic",
         "query": "personal finance",
+        "location": "Australia",
+        "telegram_channels": ["ASXAnalysis"],
     },
 ]
 
@@ -119,21 +130,39 @@ def _run(cmd: list[str], *, dry_run: bool, env: dict[str, str] | None = None) ->
     return proc.returncode
 
 
+# Every place a SCRAPECREATORS_API_KEY can live, newest edit wins so a key
+# pasted into any of them is picked up automatically on the next run.
+_API_KEY_SOURCES = [
+    KEY_FILE,
+    CONFIG_DIR / ".env",
+    Path.home() / ".config" / "last30days" / ".env",
+]
+
+
 def _load_api_key() -> str:
     env = os.environ.get("SCRAPECREATORS_API_KEY", "").strip()
     if env:
         return env
-    if KEY_FILE.exists():
-        raw = KEY_FILE.read_text(encoding="utf-8").strip()
-        if raw:
-            return raw.splitlines()[0].strip()
-    cfg = CONFIG_DIR / ".env"
-    if cfg.exists():
-        for line in cfg.read_text(encoding="utf-8-sig").splitlines():
+    candidates: list[tuple[float, str]] = []
+    for path in _API_KEY_SOURCES:
+        if not path.exists():
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
-            if line.startswith("SCRAPECREATORS_API_KEY="):
-                return line.split("=", 1)[1].strip()
-    return ""
+            if not line or line.startswith("#"):
+                continue
+            key = line.split("=", 1)[1].strip() if line.startswith("SCRAPECREATORS_API_KEY=") else line
+            if key:
+                candidates.append((mtime, key))
+                break
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    return candidates[0][1]
 
 
 def _entity_path(entity: str) -> Path:
@@ -141,12 +170,16 @@ def _entity_path(entity: str) -> Path:
 
 
 def _collect_last30days(topic: dict, *, dry_run: bool) -> int:
+    query = str(topic["query"]).strip()
+    location = str(topic.get("location") or "").strip()
+    if location:
+        query = f"{query} {location}"
     cmd = [
         sys.executable,
         str(ADAPTER),
         "-e", topic["entity"],
         "-t", topic["entity_type"],
-        "-q", topic["query"],
+        "-q", query,
         "--engine", str(LAST30DAYS_ENGINE),
         "--allow-all",
         "--search", LAST30DAYS_SOURCES,
@@ -157,6 +190,91 @@ def _collect_last30days(topic: dict, *, dry_run: bool) -> int:
     key = _load_api_key()
     env = {"SCRAPECREATORS_API_KEY": key, "LAST30DAYS_CONFIG_DIR": str(CONFIG_DIR)} if key else None
     return _run(cmd, dry_run=dry_run, env=env)
+
+
+def _telegram_records(entity: str) -> int:
+    """Count telegram-platform records currently written for an entity."""
+    path = _entity_path(entity)
+    if not path.exists():
+        return 0
+    count = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if str(record.get("platform") or "") == "telegram":
+            count += 1
+    return count
+
+
+def _collect_telegram(topic: dict, *, dry_run: bool) -> dict:
+    """Collect from the topic's verified Australian Telegram channels.
+
+    Runs before the last30days adapter so its records land first in the
+    entity corpus (the adapter appends and counts them in the coverage report).
+    A channel failure is non-fatal: the topic still collects from the engine.
+    """
+    channels = [str(c).strip() for c in (topic.get("telegram_channels") or []) if str(c).strip()]
+    result = {
+        "entity": topic["entity"],
+        "channels": len(channels),
+        "outcome": "no-channel",
+        "records": 0,
+        "errors": [],
+    }
+    if not channels:
+        return result
+    for channel in channels:
+        cmd = [
+            sys.executable,
+            str(RUN_COLLECTOR),
+            "--source", "telegram",
+            "-e", topic["entity"],
+            "-t", topic["entity_type"],
+            "--channel", channel,
+            "--location", str(topic.get("location") or ""),
+            "--allow-all",
+        ]
+        rc = _run(cmd, dry_run=dry_run)
+        if rc != 0:
+            result["errors"].append(channel)
+    result["outcome"] = "error" if result["errors"] else "ok"
+    if not dry_run:
+        result["records"] = _telegram_records(topic["entity"])
+    return result
+
+
+def _record_telegram_coverage(entity: str, result: dict, *, dry_run: bool) -> None:
+    """Patch the coverage entry (written by the adapter) with Telegram's outcome."""
+    if dry_run or result["outcome"] == "no-channel":
+        return
+    sys.path.insert(0, str(ROOT / "scrapers"))
+    try:
+        from coverage import update_coverage_entry
+    except ImportError:
+        return
+    if result["outcome"] == "error":
+        update_coverage_entry(
+            entity,
+            platform="telegram",
+            engine_state="error",
+            status="ERROR",
+            records=result["records"],
+            error=f"Telegram collection failed for channel(s): {', '.join(result['errors'])}",
+        )
+        return
+    has_records = result["records"] > 0
+    update_coverage_entry(
+        entity,
+        platform="telegram",
+        engine_state="ok" if has_records else "no-results",
+        status="AVAILABLE" if has_records else "NO_RESULTS",
+        records=result["records"],
+    )
 
 
 def _filter_last_hours(entity: str, hours: int, *, dry_run: bool) -> tuple[int, int]:
@@ -219,8 +337,11 @@ def collect_topic(topic: dict, *, dry_run: bool, keep_hours: int) -> dict:
         NORMALIZED_DIR.mkdir(parents=True, exist_ok=True)
         if path.exists():
             path.unlink()
+    telegram = _collect_telegram(topic, dry_run=dry_run)
     failed = _collect_last30days(topic, dry_run=dry_run)
+    _record_telegram_coverage(topic["entity"], telegram, dry_run=dry_run)
     kept, dropped = _filter_last_hours(topic["entity"], keep_hours, dry_run=dry_run)
+    print(f"  telegram: {telegram['outcome']} ({telegram['records']} record(s), {telegram['channels']} channel(s))")
     print(f"  after {keep_hours}h filter: kept {kept}, dropped {dropped}")
     print(f"  platforms: {_platform_counts(topic['entity']) or 'none'}")
     return {"entity": topic["entity"], "failed_steps": failed, "kept": kept}

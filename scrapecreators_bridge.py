@@ -109,10 +109,29 @@ def _load_api_key(args: argparse.Namespace) -> str:
     env = os.environ.get("SCRAPECREATORS_API_KEY", "").strip()
     if env:
         return env
-    if args.key_file.exists():
-        raw = args.key_file.read_text(encoding="utf-8").strip()
-        if raw:
-            return raw.splitlines()[0].strip()
+    candidates: list[tuple[float, str]] = []
+    for path in [
+        args.key_file,
+        args.key_file.parent.parent / ".config" / "last30days" / ".env",
+        Path.home() / ".config" / "last30days" / ".env",
+    ]:
+        if not path.exists():
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key = line.split("=", 1)[1].strip() if line.startswith("SCRAPECREATORS_API_KEY=") else line
+            if key:
+                candidates.append((mtime, key))
+                break
+    if candidates:
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        return candidates[0][1]
     raise SystemExit(
         "ERROR: no API key found. Pass --key, set SCRAPECREATORS_API_KEY, or "
         f"create {DEFAULT_KEY_FILE} with your key on one line."

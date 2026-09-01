@@ -251,6 +251,7 @@ class TelegramAdapter(SocialCollector):
 
         title, username = _parse_channel_info(page_html)
         author_name = title or username or channel
+        location = self._target_location(target)
         records: list[SocialRecord] = []
         for block in _extract_message_blocks(page_html):
             message = _parse_block(block, channel)
@@ -269,7 +270,7 @@ class TelegramAdapter(SocialCollector):
                     url=message.url,
                     engagement={},
                     media=message.media,
-                    location=None,
+                    location=location,
                     collected_at=utcnow(),
                     run_id=run_id,
                 )
@@ -281,6 +282,13 @@ class TelegramAdapter(SocialCollector):
             channel,
         )
         return records
+
+    def _target_location(self, target: dict[str, Any]) -> dict[str, Any] | None:
+        """Schema `location` object from the target's optional `location` label."""
+        label = str(target.get("location") or "").strip()
+        if not label:
+            return None
+        return {"country": label}
 
     # -- fetch -------------------------------------------------------------
 

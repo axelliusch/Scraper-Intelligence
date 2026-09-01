@@ -237,3 +237,78 @@ def write_coverage_report(
         handle.write(json.dumps(report.to_dict(), ensure_ascii=False))
         handle.write("\n")
     return path
+
+
+def update_coverage_entry(
+    entity: str,
+    *,
+    platform: str,
+    engine_state: str | None = None,
+    status: str | None = None,
+    records: int | None = None,
+    error: str | None = None,
+    path: str | Path = DEFAULT_COVERAGE_PATH,
+) -> Path | None:
+    """Patch one platform row in the most recent coverage entry for an entity.
+
+    The engine adapter writes the coverage entry after its run; collectors that
+    ran separately (e.g. Telegram via run_collector) patch their row in place
+    so the briefing's health section sees the real outcome. Only provided
+    fields are updated; the row's summary is recomputed. Returns the path when
+    a row was patched, else None.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+
+    target_index = -1
+    for index, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            blob = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if blob.get("entity") == entity:
+            target_index = index
+    if target_index < 0:
+        return None
+
+    try:
+        blob = json.loads(lines[target_index])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(blob.get("rows"), list):
+        return None
+
+    patched = False
+    for row in blob["rows"]:
+        if not isinstance(row, dict) or row.get("platform") != platform:
+            continue
+        if engine_state is not None:
+            row["engine_state"] = engine_state
+        if status is not None:
+            row["status"] = status
+        if records is not None:
+            row["records"] = records
+        if error is not None:
+            row["error"] = error
+        patched = True
+        break
+    if not patched:
+        return None
+
+    summary: dict[str, int] = {}
+    for row in blob["rows"]:
+        if isinstance(row, dict):
+            s = str(row.get("status") or "?")
+            summary[s] = summary.get(s, 0) + 1
+    blob["summary"] = summary
+    lines[target_index] = json.dumps(blob, ensure_ascii=False)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path

@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--platform", action="append", dest="platform_list", default=[])
     parser.add_argument("--feed-url", action="append", default=[])
     parser.add_argument("--channel", default="")
+    parser.add_argument("--location", default="", help="Country/place label recorded on collected records")
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--log", default="logs/social-audit.jsonl")
     args = parser.parse_args(argv)
@@ -46,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     if platforms: target["platforms"] = ",".join(dict.fromkeys(platforms))
     if args.feed_url: target["feeds"] = args.feed_url
     if args.channel: target["channel"] = args.channel
+    if args.location: target["location"] = args.location
     try:
         collector.validate_target(target)
         if args.dry_run:

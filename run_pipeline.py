@@ -8,6 +8,39 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+# Google Drive mirror for the Obsidian vault (Option B). When Drive is
+# installed, the vault is exported to both the local obsidian/ and the
+# Drive folder. Daily briefings (no_report=True) currently skip the vault;
+# set MIRROR_ON_DAILY=True to also mirror on daily runs once Drive is ready.
+GOOGLE_DRIVE_CANDIDATES = [
+    Path.home() / "My Drive",
+    Path.home() / "Google Drive",
+    Path.home() / "MyDrive",
+]
+GOOGLE_DRIVE_OBSIDIAN_SUBDIR = "Scraper Intelligence - Obsidian"
+MIRROR_ON_DAILY = False
+
+
+def _drive_obsidian_base() -> Path | None:
+    for candidate in GOOGLE_DRIVE_CANDIDATES:
+        if candidate.is_dir():
+            return candidate / GOOGLE_DRIVE_OBSIDIAN_SUBDIR
+    env = Path.home() / "My Drive" / GOOGLE_DRIVE_OBSIDIAN_SUBDIR
+    # If Drive is not installed, do not create a stray folder
+    return None
+
+
+def _mirror_vault_to_drive(digests, events, topics, entities, trends, knowledge, link_style: str, as_of: str | None, label: str) -> None:
+    base = _drive_obsidian_base()
+    if base is None:
+        return
+    drive_vault = base / (as_of or _today())[:10] / label
+    try:
+        export_obsidian_vault(drive_vault, digests=digests, events=events, topics=topics, entities=entities, trends=trends, knowledge=knowledge, link_style=link_style)
+    except Exception as exc:
+        print(f"[drive mirror] skipped: {exc}", file=sys.stderr)
+
+
 from analysis.daily_digest import build_daily_digests, digest_json_file, digest_to_markdown
 from analysis.deduplication import cluster_evidence, clusters_jsonl
 from analysis.entities import extract_entities
@@ -55,11 +88,17 @@ def run(entity: str, *, workdir: Path | None = None, as_of: str | None = None, w
     entities = extract_entities(items); topics = extract_topics(items); clusters = cluster_evidence(items, entities=entities, topics=topics); signals = score_signals(clusters, items=item_map, as_of=as_of); events = extract_events(clusters, signals, items=item_map, as_of=as_of)
     clusters_jsonl(clusters, str(workdir / "data" / "clusters" / f"{entity}-clusters.jsonl")); signals_jsonl(signals, str(workdir / "data" / "signals" / f"{entity}-signals.jsonl")); events_jsonl(events, str(workdir / "data" / "events" / f"{entity}-events.jsonl"))
     digests = build_daily_digests(events, signals, items=item_map, title_for={s.cluster_id: s.explanation for s in signals}); daily_dir = workdir / "data" / "daily"; daily_dir.mkdir(parents=True, exist_ok=True)
-    for digest in digests: digest_json_file(digest, daily_dir / f"{digest.date}.json"); (daily_dir / f"{digest.date}.md").write_text(digest_to_markdown(digest), encoding="utf-8")
+    for digest in digests: digest_json_file(digest, daily_dir / f"{entity}-{digest.date}.json"); (daily_dir / f"{entity}-{digest.date}.md").write_text(digest_to_markdown(digest), encoding="utf-8")
     coverage = _source_coverage(records); timeline = build_timeline(events, signals, items=item_map, source_coverage=coverage, start_date=start, end_date=end); timeline_dir = workdir / "data" / "timeline"; timeline_json_file(timeline, timeline_dir / f"{start}-to-{end}.json"); (timeline_dir / f"{start}-to-{end}.md").write_text(timeline_to_markdown(timeline), encoding="utf-8")
     knowledge = classify_events(events, topic_status={t.name: t.status for t in timeline.topics}) + classify_topics(events, timeline.topics) + classify_entities(events); knowledge_jsonl(knowledge, str(workdir / "data" / "knowledge" / f"{entity}-knowledge.jsonl"))
-    vault = workdir / "obsidian" / (as_of or _today())[:10] / label; vault_counts = export_obsidian_vault(vault, digests=digests, events=events, topics=timeline.topics, entities=timeline.entities, trends=timeline.topics, knowledge=knowledge, link_style=link_style)
-    dashboard = write_dashboard_html(workdir / "dashboard" / "index.html", records_count=len(records), evidence_count=len(items), events=events, digests=digests, trends=timeline.topics, knowledge=knowledge, source_coverage=coverage, observation_window=f"{start}-to-{end}", generated_date=(as_of or _today())[:10])
+    if no_report:
+        vault = workdir / "obsidian" / (as_of or _today())[:10] / label; vault_counts = {name: 0 for name in ("Daily", "Events", "Topics", "Entities", "Trends", "Sources")}; dashboard = str(workdir / "dashboard" / "index.html")
+        if MIRROR_ON_DAILY:
+            _mirror_vault_to_drive(digests, events, timeline.topics, timeline.entities, timeline.topics, knowledge, link_style, as_of, label)
+    else:
+        vault = workdir / "obsidian" / (as_of or _today())[:10] / label; vault_counts = export_obsidian_vault(vault, digests=digests, events=events, topics=timeline.topics, entities=timeline.entities, trends=timeline.topics, knowledge=knowledge, link_style=link_style)
+        _mirror_vault_to_drive(digests, events, timeline.topics, timeline.entities, timeline.topics, knowledge, link_style, as_of, label)
+        dashboard = write_dashboard_html(workdir / "dashboard" / "index.html", records_count=len(records), evidence_count=len(items), events=events, digests=digests, trends=timeline.topics, knowledge=knowledge, source_coverage=coverage, observation_window=f"{start}-to-{end}", generated_date=(as_of or _today())[:10])
     records_by_source: dict[str, int] = {}
     for record in records: records_by_source[record.get("platform", "unknown")] = records_by_source.get(record.get("platform", "unknown"), 0) + 1
     reports = workdir / "reports"; base = reports / f"Scraper_Intelligence_Report_{(as_of or _today())[:10]}_{label}"

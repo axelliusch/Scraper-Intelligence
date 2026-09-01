@@ -38,18 +38,21 @@ TOPICS: list[dict] = [
         "display": "Property",
         "entity_type": "topic",
         "query": "property market",
+        "location": "Australia",
     },
     {
         "entity": "wedding",
         "display": "Wedding",
         "entity_type": "topic",
         "query": "wedding planning",
+        "location": "World",
     },
     {
         "entity": "finance",
         "display": "Finance",
         "entity_type": "topic",
         "query": "personal finance",
+        "location": "Australia",
     },
 ]
 
@@ -173,10 +176,22 @@ def _by_platform(records: list[dict[str, Any]], max_per: int = 10) -> str:
     return "\n".join(lines)
 
 
-def _load_digest(as_of: str) -> dict[str, Any] | None:
-    path = DAILY_DIR / f"{as_of[:10]}.json"
-    if not path.exists():
+def _load_digest(entity: str, as_of: str) -> dict[str, Any] | None:
+    """Return this entity's latest digest dated on/before the briefing day.
+
+    Digest files are keyed by the date the events were observed
+    (data/daily/<entity>-<date>.json), which can be earlier than the briefing
+    day inside a multi-day window.
+    """
+    day = as_of[:10]
+    candidates: list[tuple[str, Path]] = []
+    for path in DAILY_DIR.glob(f"{entity}-*.json"):
+        name = path.stem[len(entity) + 1:]
+        if name and name <= day:
+            candidates.append((name, path))
+    if not candidates:
         return None
+    _, path = max(candidates, key=lambda item: item[0])
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -292,19 +307,6 @@ _CAUSE_FIX_RULES: list[tuple[str, str]] = [
     ("no browser", "Log into this platform once in the browser the engine reads (see .config/last30days/.env FROM_BROWSER)."),
 ]
 
-_UNUSUAL_STATUSES = (
-    "ERROR",
-    "UNREACHABLE",
-    "AUTH_FAILED",
-    "RATE_LIMITED",
-    "MISSING_CREDENTIALS",
-    "NOT_INSTALLED",
-    "NOT_CONFIGURED",
-    "PARTIAL",
-    "NO_RESULTS",
-)
-
-
 def _load_coverage(entity: str) -> dict[str, Any] | None:
     """Return the most recent coverage report for an entity (or None)."""
     if not COVERAGE_LOG.exists():
@@ -337,13 +339,6 @@ _ERROR_FALLBACK_FIX: dict[str, str] = {
 }
 
 
-def _health_why(status: str, error: str) -> str:
-    error = (error or "").strip()
-    if error:
-        return error
-    return _STATUS_WHY.get(status, f"status {status}")
-
-
 def _health_fix(status: str, error: str, platform: str) -> str:
     error = (error or "").strip()
     lowered = error.lower()
@@ -357,41 +352,103 @@ def _health_fix(status: str, error: str, platform: str) -> str:
     return _STATUS_FIX.get(status, "")
 
 
-def _health_section(entity: str) -> str:
-    """Render the body of the 'Collection health' section (heading excluded)."""
+def _quiet_reason(
+    platform: str,
+    status: str,
+    state: str | None,
+    raw_records: int,
+    error: str,
+) -> tuple[str, str]:
+    """Explain (why, what-to-do) for a platform that produced no content.
+
+    Priority:
+    1. Engine never observed the platform this run  -> "not searched".
+    2. Engine searched and found items, but none are
+       inside the 36h briefing window               -> age-out explanation.
+    3. Engine observed it but returned nothing      -> status/error-based
+       explanation (no results, 0 credits, auth failure, ...).
+    """
+    error = (error or "").strip()
+    if not state:
+        if platform == "web":
+            return (
+                "Not searched this run — 'web' is not in the configured source list and no web-search key "
+                "(BRAVE_API_KEY / SERPER_API_KEY) is set.",
+                "Add 'web' to LAST30DAYS_SOURCES and set a search key in .config/last30days/.env.",
+            )
+        if platform == "telegram":
+            return (
+                "No Telegram channel is configured for this topic — no public, on-topic channel was "
+                "verified for it.",
+                "Add a verified channel under 'telegram_channels' in collect_today.py.",
+            )
+        return (
+            "Not searched this run — not in the configured source list for this topic.",
+            "Add it to LAST30DAYS_SOURCES if you want it covered.",
+        )
+    if raw_records > 0:
+        return (
+            f"Searched and found {raw_records} item(s), but none fall within the last 36h window.",
+            "Normal — items age out of the window; check again next run.",
+        )
+    if status == "NO_RESULTS":
+        return (
+            "Searched, but found no matching content in the window.",
+            "Normal — nothing new this window.",
+        )
+    if status == "AVAILABLE":
+        return (
+            "Searched, but returned no matching content this window.",
+            "Normal — retry next run.",
+        )
+    if error:
+        return error, (_health_fix(status, error, platform) or "—")
+    if status == "ERROR":
+        fallback_why = _ERROR_FALLBACK_WHY.get(platform)
+        if fallback_why:
+            return fallback_why, (_health_fix(status, error, platform) or "—")
+    return (
+        _STATUS_WHY.get(status, f"status {status}"),
+        _STATUS_FIX.get(status, "") or "—",
+    )
+
+
+def _health_section(entity: str, records: list[dict[str, Any]]) -> str:
+    """Render the body of the 'Collection health' section (heading excluded).
+
+    Every platform that contributed no content to this briefing is listed with
+    a plain-language reason: not searched this run, searched but everything
+    fell outside the 36h window, 0 credits, auth failure, no results, etc.
+    """
     coverage = _load_coverage(entity)
-    lines: list[str] = []
     if not coverage:
-        lines.append("_No collection coverage was recorded for this topic._")
-        lines.append("")
-        return "\n".join(lines)
+        return "_No collection coverage was recorded for this topic._\n"
 
     rows = [r for r in (coverage.get("rows") or []) if isinstance(r, dict)]
     if not rows:
-        lines.append("_No platform coverage rows were recorded for this topic._")
-        lines.append("")
-        return "\n".join(lines)
+        return "_No platform coverage rows were recorded for this topic._\n"
 
-    unusual = [r for r in rows if r.get("status") in _UNUSUAL_STATUSES]
-    if not unusual:
-        lines.append("All configured platforms collected normally this run.")
-        lines.append("")
-        return "\n".join(lines)
+    kept_counts: dict[str, int] = {}
+    for record in records:
+        platform = str(record.get("platform") or "unknown")
+        kept_counts[platform] = kept_counts.get(platform, 0) + 1
 
-    lines.append("Platforms that did not collect normally this run:")
-    lines.append("")
-    lines.append("| Platform | Status | Why | What to do |")
-    lines.append("|---|---|---|---|")
-    for row in unusual:
-        name = PLATFORM_LABELS.get(row.get("platform"), row.get("name") or row.get("platform"))
+    quiet = [r for r in rows if kept_counts.get(str(r.get("platform") or ""), 0) == 0]
+    if not quiet:
+        return "All configured platforms contributed content this run.\n"
+
+    lines = ["Platforms with no content in this briefing:", ""]
+    lines.append("| Platform | Why | What to do |")
+    lines.append("|---|---|---|")
+    for row in quiet:
         platform = str(row.get("platform") or "")
+        name = PLATFORM_LABELS.get(platform, row.get("name") or platform)
+        state = str(row.get("engine_state") or "") or None
         status = str(row.get("status") or "?")
+        raw_records = int(row.get("records") or 0)
         error = str(row.get("error") or "")
-        why = _health_why(status, error)
-        if status == "ERROR" and not error:
-            why = _ERROR_FALLBACK_WHY.get(platform, why)
-        fix = _health_fix(status, error, platform) or "—"
-        lines.append(f"| {name} | {status} | {why} | {fix} |")
+        why, fix = _quiet_reason(platform, status, state, raw_records, error)
+        lines.append(f"| {name} | {why} | {fix} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -438,7 +495,7 @@ def _render(topic: dict[str, Any], as_of: str, *, dry_run: bool) -> dict[str, An
             summary = {}
 
     records = _load_records(entity, as_of)
-    digest = _load_digest(as_of)
+    digest = _load_digest(entity, as_of)
 
     lines = [
         f"# {display} - {day_label}",
@@ -446,9 +503,11 @@ def _render(topic: dict[str, Any], as_of: str, *, dry_run: bool) -> dict[str, An
         f"Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
         f"Observation window: last 36h ending {day_label}",
         "",
-        "## Executive Summary",
-        "",
     ]
+    location = str(topic.get("location") or "").strip()
+    if location:
+        lines += [f"Geographic scope: {location}", ""]
+    lines += ["## Executive Summary", ""]
     if digest and digest.get("executive_summary"):
         lines.append(digest["executive_summary"])
         lines.append("")
@@ -460,7 +519,7 @@ def _render(topic: dict[str, Any], as_of: str, *, dry_run: bool) -> dict[str, An
     lines += ["## Important events", "", _events_section(digest)]
     lines += ["## Signals", "", _signals_section(digest)]
     lines += ["## Source coverage", "", _coverage_section(records, digest), ""]
-    lines += ["## Collection health", "", _health_section(entity)]
+    lines += ["## Collection health", "", _health_section(entity, records)]
 
     body = "\n".join(lines).rstrip() + "\n"
 
